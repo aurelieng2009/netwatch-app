@@ -1,6 +1,97 @@
 # NetWatch
 
-Supervision réseau domestique auto-hébergée : inventaire des appareils, présence, latence, ports ouverts et alertes, avec une interface web moderne. Tout tient dans un seul conteneur, sans base externe ni dépendance lourde (seulement Starlette et Uvicorn côté Python, et nmap).
+Supervision réseau domestique auto-hébergée : inventaire des appareils, présence, latence, ports ouverts, box Internet (Bouygues, Free, Orange, SFR), suivi Wi-Fi, Zigbee et alertes, dans une interface web. Tout tient dans un seul conteneur Docker, sans base externe ni compte en ligne.
+
+![Tableau de bord](docs/screenshots/tableau-de-bord.png)
+
+| Appareils | Fiche d'un appareil |
+|---|---|
+| ![Liste des appareils](docs/screenshots/appareils.png) | ![Fiche d'un appareil](docs/screenshots/fiche-appareil.png) |
+
+| Latence et disponibilité | Assistant de configuration |
+|---|---|
+| ![Heatmap de latence](docs/screenshots/latence.png) | ![Assistant de configuration](docs/screenshots/assistant.png) |
+
+Captures prises en mode démonstration (données simulées).
+
+## Installation
+
+### Ce qu'il faut
+
+- Une machine **Linux** allumée en permanence et branchée sur votre réseau local : mini-PC, NAS, Raspberry Pi (64 bits), ou une VM (Proxmox, etc.). Un câble Ethernet est préférable au Wi-Fi.
+- **Docker** et le greffon **Docker Compose** (`docker compose version` doit répondre).
+- Environ 300 Mo de disque pour l'image, puis quelques dizaines de Mo de données.
+
+Docker Desktop sous Windows ou macOS ne convient pas : NetWatch a besoin d'être directement sur le réseau (`network_mode: host`) pour voir les appareils, ce que Docker Desktop ne permet pas. Pour un simple essai de l'interface sur ces systèmes, utilisez le [mode démonstration](#essayer-sans-rien-scanner).
+
+### Installer
+
+```bash
+git clone https://github.com/aurelieng2009/netwatch-app.git
+cd netwatch-app
+```
+
+Ouvrez `docker-compose.yml` et définissez la clé qui chiffre vos mots de passe (box, SSH, MQTT). Retirez le `#` devant la ligne et mettez une longue phrase de votre choix :
+
+```yaml
+      NETWATCH_SECRET_KEY: une-longue-phrase-rien-qu-a-vous
+```
+
+Notez-la quelque part : sans elle, les mots de passe enregistrés ne sont plus lisibles. Puis lancez :
+
+```bash
+docker compose up -d --build
+```
+
+La première construction prend quelques minutes. Ouvrez ensuite `http://<adresse-de-la-machine>:8484` depuis un ordinateur ou un téléphone du même réseau.
+
+### Premier démarrage
+
+1. **Créez le compte administrateur** (identifiant et mot de passe de 8 caractères au moins). Faites-le tout de suite : la première personne du réseau local qui ouvre la page le crée.
+2. **Suivez l'assistant** : il détecte votre réseau et votre box, et vous laisse choisir ce qui est surveillé (appareils, ports, box Internet, Wi-Fi, Zigbee). Chaque volet se désactive, et l'assistant se relance depuis **Réglages**.
+3. **Approuvez vos appareils** dans la page **Appareils**, et marquez « surveillés » ceux dont vous voulez être alerté.
+4. Pour recevoir les alertes sur un téléphone, ouvrez NetWatch dessus et activez-les dans **Notifications**. Cela demande un accès en HTTPS, par exemple derrière un reverse proxy.
+
+### Avec Portainer
+
+Créez une stack depuis un dépôt Git : **Stacks → Add stack → Repository**, URL `https://github.com/aurelieng2009/netwatch-app.git`, fichier `docker-compose.yml`. Ajoutez `NETWATCH_SECRET_KEY` dans les variables d'environnement de la stack, puis déployez. L'éditeur web de Portainer ne sait pas construire une image : passez bien par le dépôt.
+
+### Mettre à jour
+
+```bash
+cd netwatch-app
+git pull
+docker compose up -d --build
+```
+
+Les données sont conservées (volume `netwatch-data`). Dans Portainer : « Pull and redeploy » sur la stack.
+
+### Sauvegarder, désinstaller
+
+Toutes les données sont dans le volume Docker `netwatch-data` (base SQLite). Pour tout supprimer, données comprises :
+
+```bash
+docker compose down -v
+```
+
+Sans `-v`, le conteneur est supprimé mais les données restent.
+
+### Essayer sans rien scanner
+
+Dans `docker-compose.yml`, retirez le `#` devant `NETWATCH_DEMO: "true"` : l'interface s'ouvre sur des données simulées, avec 30 jours d'historique, et aucun paquet n'est envoyé sur le réseau. Ce mode fonctionne aussi avec Docker Desktop, à condition de remplacer `network_mode: host` par `ports: ["8484:8484"]`.
+
+### Si quelque chose ne va pas
+
+| Symptôme | Cause probable |
+|---|---|
+| Aucun appareil trouvé | Le conteneur n'est pas en `network_mode: host`, ou il lui manque les capacités `NET_RAW` et `NET_ADMIN` (le compose fourni les donne). |
+| Seule la machine elle-même apparaît | VM en NAT : la carte réseau de la VM doit être sur le pont du réseau local (sous Proxmox, `vmbr0`). Si le pare-feu de l'hyperviseur est actif, autorisez l'ARP et l'ICMP sortants. |
+| Appareils d'un autre VLAN absents | L'ARP ne traverse pas les routeurs : NetWatch ne voit que le réseau où il est branché. |
+| « Coffre verrouillé » | `NETWATCH_SECRET_KEY` a changé depuis l'enregistrement des mots de passe. Remettez l'ancienne valeur, ou ressaisissez les mots de passe. |
+| Page blanche après une mise à jour | Rechargez la page (Ctrl+F5). |
+| La box n'est pas reconnue | Choisissez le fournisseur à la main dans la page **Box**, et vérifiez l'adresse de la box dans **Réglages**. |
+
+Les journaux du conteneur disent ce qui se passe : `docker logs netwatch`.
 
 ## Fonctionnalités (V1)
 
@@ -89,31 +180,6 @@ Accès protégé par **nom d'utilisateur + mot de passe**, avec une vraie page d
 > Mot de passe oublié ? Redémarre avec `NETWATCH_PASSWORD` (le nouveau) **et** `NETWATCH_PASSWORD_RESET=true`.
 
 Ces fonctions ont besoin des paquets `asyncssh` et `cryptography` (déjà dans `requirements.txt`). Définissez `NETWATCH_SECRET_KEY` pour ne pas stocker la clé de chiffrement dans `/data`. La page **Identifiants** gère les jeux SSH, la page **Diagnostic** montre verdict, constats et conflits.
-
-## Démarrage rapide
-
-```bash
-# sur une machine Docker du réseau local (VM, NAS, mini-PC…)
-git clone <ce dépôt> netwatch && cd netwatch     # ou décompresser l'archive
-docker compose up -d --build
-# → http://<ip-de-la-vm>:8484
-```
-
-Pour tester l'interface sans rien scanner : `NETWATCH_DEMO=true` (données simulées avec 30 jours d'historique).
-
-### Avec Portainer
-
-Portainer ne sait pas faire de `build:` depuis l'éditeur web. Il y a deux options :
-
-1. **Image construite sur la VM** : `docker build -t netwatch:latest .`, puis créez une stack dans Portainer avec le `docker-compose.yml` après avoir supprimé la ligne `build: .`.
-2. **Stack depuis un dépôt Git** (Portainer → Stacks → Repository) : le build est alors fait par Portainer.
-
-### Prérequis réseau (important)
-
-- `network_mode: host` et les capacités `NET_RAW` + `NET_ADMIN` sont **indispensables**. Sans elles, pas d'ARP et pas de `nmap -sS/-O`. Le compose fourni retire toutes les autres capacités, monte le système de fichiers en lecture seule et active `no-new-privileges`.
-- Sous Proxmox, la carte réseau de la VM doit être sur le bridge du LAN (ex. `vmbr0`), sans NAT. Si le pare-feu Proxmox est activé sur la VM, il faut autoriser l'ICMP et l'ARP sortants.
-- L'ARP ne traverse pas les routeurs. Pour surveiller un autre VLAN plus tard, il faudra une interface dans ce VLAN (prévu en V2).
-- Si l'ARP échoue (capacité manquante), NetWatch se rabat sur un balayage ICMP suivi de la lecture du cache ARP du noyau. C'est moins fiable, et le journal le signale.
 
 ## Sécurité
 
@@ -266,3 +332,9 @@ Le choix de ne dépendre d'aucune lib réseau (scapy, etc.) garde l'image légè
 - Inventaire SNMP v2c/v3 (imprimantes, switches, onduleurs) en complément du SSH.
 - Valider les fournisseurs Free, Orange et SFR sur du matériel réel ; débit par appareil quand la box l'expose.
 - Multi-VLAN, découverte MQTT pour Home Assistant, export Prometheus.
+
+## Licence
+
+NetWatch est distribué sous licence MIT (voir [LICENSE](LICENSE)).
+
+N'utilisez NetWatch que sur un réseau qui vous appartient ou que vous êtes autorisé à surveiller : il effectue des scans de ports.

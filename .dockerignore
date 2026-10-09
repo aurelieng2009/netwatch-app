@@ -4,3 +4,6 @@ tests/
 *.db
 *.db-*
 .git
+docs/
+LICENSE
+README.md

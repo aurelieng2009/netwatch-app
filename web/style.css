@@ -357,3 +357,4 @@ td .sub { color: var(--muted); font-size: 12px; }
 .wiz-steps .done { color: var(--text-2); }
 .wiz-body { display: flex; flex-direction: column; gap: 10px; min-height: 180px; }
 .wiz-body select { width: 100%; }
+.wiz-card label.check { flex-direction: row; font-size: 13.5px; color: var(--text); }
