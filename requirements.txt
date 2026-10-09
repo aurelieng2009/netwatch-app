@@ -1,0 +1,6 @@
+starlette==1.7.0
+uvicorn==0.54.0
+asyncssh==2.24.1
+cryptography==50.0.2
+pywebpush==2.5.0
+webauthn==3.0.1

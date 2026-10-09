@@ -1,0 +1,81 @@
+services:
+  netwatch:
+    build: .
+    image: netwatch:latest
+    container_name: netwatch
+    restart: unless-stopped
+
+    # Obligatoire : le scan ARP a besoin d'être directement sur le LAN
+    network_mode: host
+
+    # Durcissement : on ne garde que ce qu'il faut pour ARP / ICMP / nmap -sS -O
+    cap_drop: [ALL]
+    cap_add: [NET_RAW, NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+
+    volumes:
+      - netwatch-data:/data
+
+    environment:
+      TZ: Europe/Paris          # votre fuseau horaire
+      # --- Réseau (auto-détecté si vide : interface de la route par défaut)
+      # NETWATCH_INTERFACE: eth0
+      # NETWATCH_SUBNET: 192.168.1.0/24
+      NETWATCH_EXTERNAL_TARGETS: "1.1.1.1,8.8.8.8"
+      # Hôtes à ne jamais scanner (IP ou CIDR, séparés par des virgules)
+      # NETWATCH_EXCLUDE: "192.168.1.1,192.168.1.240/28"
+      # --- Cadences (secondes)
+      NETWATCH_DISCOVERY_INTERVAL: 60
+      NETWATCH_DEEP_INTERVAL: 3600
+      # NETWATCH_NMAP_ARGS: "-sS -sV --version-light -O --osscan-limit --top-ports 1000 -T4 --host-timeout 300s"
+      # NETWATCH_NMAP_CONCURRENCY: 3
+      NETWATCH_OFFLINE_AFTER: 3
+      # --- Alertes
+      NETWATCH_LATENCY_WARN_MS: 100
+      NETWATCH_EXTERNAL_LATENCY_WARN_MS: 80
+      # NETWATCH_NTFY_URL: https://ntfy.sh/mon-topic-secret
+      # NETWATCH_MQTT_HOST: 192.168.1.11
+      # NETWATCH_MQTT_USER: netwatch
+      # NETWATCH_MQTT_PASSWORD: changeme
+      # Diagnostic Zigbee2MQTT (réglable depuis la page Zigbee ; réutilise le broker ci-dessus)
+      # NETWATCH_Z2M_ENABLED: true
+      # NETWATCH_Z2M_TOPIC: zigbee2mqtt
+      # --- Interface web (port 8484)
+      # Authentification : au premier accès, NetWatch demande de créer le compte admin
+      # directement dans le navigateur. Aucune variable n'est nécessaire ici.
+      # (Optionnel) préconfigurer le mot de passe sans passer par l'écran :
+      # NETWATCH_PASSWORD: changeme
+      # NETWATCH_USERNAME: admin
+      # (Optionnel) désactiver complètement l'authentification :
+      # NETWATCH_NO_AUTH: "true"
+      # Derrière un reverse proxy HTTPS, le cookie de session est marqué Secure automatiquement.
+      # Derrière un reverse proxy : son adresse, pour que la limitation des tentatives voie le vrai visiteur.
+      # NETWATCH_TRUSTED_PROXIES: "192.168.1.10"
+      # Autoriser l'affichage dans un cadre (tableau de bord domotique) :
+      # NETWATCH_FRAME_ANCESTORS: "https://homeassistant.exemple.fr"
+      # NETWATCH_SESSION_COOKIE_SECURE: "true"   # force Secure si l'auto-détection échoue
+      # NETWATCH_PASSWORD_RESET: "true"          # réinitialise le mot de passe depuis NETWATCH_PASSWORD
+      # --- V2 : inventaire SSH authentifié
+      # Clé de chiffrement des secrets (AES-256). À DÉFINIR : sans elle, la clé est générée dans /data,
+      # à côté de la base, et ne la protège plus si le volume fuit.
+      # NETWATCH_SECRET_KEY: une-phrase-secrète-longue-et-unique
+      # NETWATCH_SSH_ENABLED: "true"        # inventaire SSH après chaque scan approfondi
+      # NETWATCH_SSH_MAX_ATTEMPTS: 3        # jeux d'identifiants essayés par hôte et par cycle
+      # NETWATCH_SSH_RETRY_AFTER: 86400     # délai avant de réessayer un identifiant refusé (s)
+      # --- V2 : diagnostic de latence
+      # NETWATCH_DIAG_INTERVAL: 3600        # diagnostic complet planifié (s)
+      # NETWATCH_DIAG_DNS_DOMAIN: example.com
+      # NETWATCH_DIAG_TCP_TARGETS: "1.1.1.1:443,8.8.8.8:443"
+      # NETWATCH_BUFFERBLOAT_URL: https://speed.cloudflare.com/__down?bytes=100000000
+      # NETWATCH_ANOMALY_FACTOR: 3          # latence 5 min > référence × ce facteur = anomalie
+      # --- Box Internet (Bouygues, Free, Orange, SFR) : tout se règle dans l'assistant de l'interface.
+      # (Optionnel) pré-activer la supervision ; l'adresse vide = passerelle détectée.
+      # NETWATCH_BOX_ENABLED: "true"
+      # NETWATCH_BOX_HOST: 192.168.1.254
+      # --- Démo (données simulées, aucun scan réel)
+      # NETWATCH_DEMO: "true"
+
+volumes:
+  netwatch-data:
