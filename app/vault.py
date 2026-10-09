@@ -40,7 +40,7 @@ V2_PREFIX = "v2:"
 V2_AAD = b"netwatch-vault-v2"
 V2_SCRYPT_N = 2**16
 # clés de la table meta qui contiennent un secret chiffré (rechiffrées lors du passage en v2)
-META_SECRETS = ("box_password", "box_token", "bbox_password", "mqtt_password", "ha_token")
+META_SECRETS = ("box_password", "box_token", "bbox_password", "mqtt_password", "ha_token", "ai_key")
 AUTH_TYPES = ("password", "key")
 
 

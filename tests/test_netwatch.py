@@ -2440,3 +2440,73 @@ class SecurityPass2Test(unittest.TestCase):
             # un en-tête falsifié en amont du proxy ne trompe pas : c'est la dernière adresse non fiable qui compte
             self.assertEqual(c.post("/api/login", json=good,
                                     headers={"X-Forwarded-For": "1.2.3.4, 203.0.113.7"}).status_code, 429)
+
+
+class AIAdvisorTest(unittest.TestCase):
+    def _env(self):
+        from app.vault import Vault
+        tmp = tempfile.mkdtemp()
+        db = DB(os.path.join(tmp, "ai.db"))
+        return db, Vault(db, "phrase-secrete-de-test", os.path.join(tmp, "secret.key"))
+
+    def test_config_key_and_ask(self):
+        from unittest import mock
+
+        from app import aiadvisor
+        db, vault = self._env()
+        db.x("INSERT INTO devices(mac, kind, ip, hostname, alias) VALUES(?,?,?,?,?)",
+             ["aa:bb:cc:dd:ee:01", "lan", "192.168.1.27", "S26-Ultra-de-aurelien", None])
+        with self.assertRaises(ValueError):
+            aiadvisor.set_config(db, {"provider": "inconnu"})
+        with self.assertRaises(ValueError):
+            aiadvisor.set_config(db, {"provider": "custom", "base_url": "http://exemple.com/v1"})
+        aiadvisor.set_config(db, {"provider": "groq"})
+        with self.assertRaises(aiadvisor.AIError):
+            aiadvisor.ask(db, vault, "wifi", {}, "")            # pas de clé
+        aiadvisor.set_key(db, vault, "gsk_cle_de_test_123")
+        self.assertNotIn("gsk_cle", db.get_meta("ai_key"))        # chiffrée au repos
+        self.assertTrue(aiadvisor.status(db, vault)["configured"])
+        ctx = {"appareil": "S26-Ultra-de-aurelien", "ip": "192.168.1.27", "mac": "AA:BB:CC:DD:EE:01"}
+        seen = {}
+
+        def fake_post(url, headers, body):
+            seen.update(url=url, headers=headers, body=body)
+            return {"choices": [{"message": {"content": "Le Appareil-1 est instable."}}]}
+
+        with mock.patch.object(aiadvisor, "_post", fake_post), mock.patch.object(aiadvisor, "_last", 0.0):
+            r = aiadvisor.ask(db, vault, "wifi", ctx, "pourquoi ?")
+        sent = json.dumps(seen["body"])
+        for secret in ("S26-Ultra", "192.168.1.27", "AA:BB:CC", "aa:bb:cc"):
+            self.assertNotIn(secret, sent)                        # anonymisé avant l'envoi
+        self.assertEqual(seen["headers"]["Authorization"], "Bearer gsk_cle_de_test_123")
+        self.assertIn("S26-Ultra-de-aurelien", r["answer"])       # nom remis dans la réponse
+        with mock.patch.object(aiadvisor, "_last", time.time()):
+            with self.assertRaises(aiadvisor.AIError):
+                aiadvisor.ask(db, vault, "wifi", ctx)             # anti-rafale
+
+    def test_provider_formats(self):
+        from unittest import mock
+
+        from app import aiadvisor
+        calls = []
+
+        def fake(url, headers, body):
+            calls.append((url, headers, body))
+            if "anthropic" in url:
+                return {"content": [{"type": "text", "text": "ok A"}]}
+            if "googleapis" in url:
+                return {"candidates": [{"content": {"parts": [{"text": "ok G"}]}}]}
+            return {"choices": [{"message": {"content": "ok O"}}]}
+
+        with mock.patch.object(aiadvisor, "_post", fake):
+            self.assertEqual(aiadvisor.call("anthropic", "k", "", "", "s", "u"), "ok A")
+            self.assertEqual(aiadvisor.call("gemini", "k", "gemini-x", "", "s", "u"), "ok G")
+            self.assertEqual(aiadvisor.call("openai", "k", "", "", "s", "u"), "ok O")
+        self.assertEqual(calls[0][1]["x-api-key"], "k")
+        self.assertIn("gemini-x:generateContent", calls[1][0])
+        self.assertEqual(calls[1][1]["x-goog-api-key"], "k")        # clé en en-tête, jamais dans l'URL
+        self.assertNotIn("k", calls[1][0].split("?")[-1] if "?" in calls[1][0] else "")
+        aiadvisor.url_allowed("https://api.exemple.com/v1/chat/completions")
+        aiadvisor.url_allowed("http://192.168.1.50:11434/v1/chat/completions")
+        with self.assertRaises(ValueError):
+            aiadvisor.url_allowed("http://8.8.8.8/v1")

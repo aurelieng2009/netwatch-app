@@ -18,7 +18,7 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import airscan
+from . import aiadvisor, airscan
 from .auth import Auth
 from .boxes import host_allowed
 from .config import Config
@@ -878,6 +878,89 @@ def create_app(cfg: Config, db: DB, engine: Engine) -> Starlette:
         regen = req.method == "POST"
         return JSONResponse({"token": airscan.token(db, regenerate=regen)})
 
+    # ------------------------------------------------------------ avis de l'IA
+    def _ai_context(topic: str) -> tuple[dict, list[str]]:
+        """Résumé compact des mesures pour un sujet, et noms de réseaux Wi-Fi à anonymiser."""
+        from . import wifi
+        now = int(time.time())
+        ssids: list[str] = []
+        snap = airscan.last(db)
+        if snap:
+            ssids += [a.get("ssid") for a in snap.get("aps", []) if a.get("ssid")]
+            ssids += [(snap.get("connected") or {}).get("ssid") or ""]
+        if topic == "wifi":
+            names = {h["mac"]: (h.get("netwatch_name") or h.get("hostname"))
+                     for h in (engine.box.hosts() or []) if h.get("mac")}
+            rep = wifi.report(db, now - 86400, now, names, now)
+            devs = [{k: d.get(k) for k in ("name", "ap", "band", "rssi_avg", "drops", "roams", "bands",
+                                           "connected_s", "ping_up", "worst", "rssi_at_drop", "share")}
+                    | {"issues": [i["text"] for i in d.get("issues", [])]} for d in rep.get("devices", [])[:25]]
+            radios = (engine.box.radios or {}).get("bands") or {}
+            return ({"periode": "24 h", "appareils": devs, "radios_box": radios,
+                     "recommandations": engine.box.status()["wifi"]["recommendations"]}, ssids)
+        if topic == "radio":
+            radios = (engine.box.radios or {}).get("bands") or {}
+            a = airscan.analyze(snap, (radios.get("2.4") or {}).get("channel"), (engine.z2m.info or {}).get("channel"))
+            if a.get("available"):
+                a["aps"] = [{k: x.get(k) for k in ("ssid", "band", "channel", "signal", "util", "stations")}
+                            for x in a["aps"][:30]]
+            return ({"scan": a, "radios_box": radios}, ssids)
+        if topic == "diagnostic":
+            fr = [{k: r[k] for k in ("severity", "category", "title", "detail", "suggestion", "first_seen", "last_seen")}
+                  for r in db.q("SELECT * FROM findings WHERE active=1 ORDER BY first_seen DESC LIMIT 40")]
+            cf = db.q("SELECT ip, first_seen, last_seen, resolved FROM ip_conflicts ORDER BY last_seen DESC LIMIT 20")
+            return ({"constats_actifs": fr, "conflits_ip": cf}, ssids)
+        if topic == "zigbee":
+            return ({"rapport_24h": engine.z2m.report(24)}, ssids)
+        ev = db.q("SELECT ts, type, severity, message FROM events WHERE severity!='info' AND ts>? "
+                  "ORDER BY ts DESC LIMIT 40", [now - 86400])
+        dev = db.q("SELECT online, count(*) n FROM devices WHERE kind='lan' GROUP BY online")
+        return ({"appareils_par_etat": {str(r["online"]): r["n"] for r in dev}, "evenements_24h": ev}, ssids)
+
+    async def ai_get(_: Request):
+        return JSONResponse(aiadvisor.status(db, engine.vault))
+
+    async def ai_config(req: Request):
+        body = {}
+        with contextlib.suppress(Exception):
+            body = await req.json()
+        try:
+            aiadvisor.set_config(db, body)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, 400)
+        return JSONResponse(aiadvisor.status(db, engine.vault))
+
+    async def ai_key_set(req: Request):
+        body = {}
+        with contextlib.suppress(Exception):
+            body = await req.json()
+        if engine.vault.locked:
+            return JSONResponse({"error": "coffre verrouillé : " + (engine.vault.reason or "")}, 409)
+        try:
+            aiadvisor.set_key(db, engine.vault, str(body.get("key", "")))
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, 400)
+        return JSONResponse(aiadvisor.status(db, engine.vault))
+
+    async def ai_key_delete(_: Request):
+        aiadvisor.clear_key(db)
+        return JSONResponse(aiadvisor.status(db, engine.vault))
+
+    async def ai_ask(req: Request):
+        body = {}
+        with contextlib.suppress(Exception):
+            body = await req.json()
+        topic = str(body.get("topic", ""))
+        if topic not in aiadvisor.TOPICS:
+            return JSONResponse({"error": "sujet inconnu"}, 400)
+        ctx, ssids = _ai_context(topic)
+        try:
+            out = await asyncio.to_thread(aiadvisor.ask, db, engine.vault, topic, ctx,
+                                          str(body.get("question", "")), ssids)
+        except (aiadvisor.AIError, ValueError) as e:
+            return JSONResponse({"error": str(e)}, 400)
+        return JSONResponse(out)
+
     async def index(_: Request):
         return FileResponse(os.path.join(WEB_DIR, "index.html"), headers={"Cache-Control": "no-cache"})
 
@@ -1132,6 +1215,11 @@ def create_app(cfg: Config, db: DB, engine: Engine) -> Starlette:
         Route("/api/z2m/mqtt-password", mqtt_password_delete, methods=["DELETE"]),
         Route("/api/z2m/ha-token", ha_token_set, methods=["PUT"]),
         Route("/api/z2m/ha-token", ha_token_delete, methods=["DELETE"]),
+        Route("/api/ai", ai_get),
+        Route("/api/ai/config", ai_config, methods=["PUT"]),
+        Route("/api/ai/key", ai_key_set, methods=["PUT"]),
+        Route("/api/ai/key", ai_key_delete, methods=["DELETE"]),
+        Route("/api/ai/ask", ai_ask, methods=["POST"]),
         Route("/api/air", air_get),
         Route("/api/air/ingest", air_ingest, methods=["POST"]),
         Route("/api/air/token", air_token, methods=["GET", "POST"]),

@@ -1013,6 +1013,102 @@ async function pageNotifications(root) {
   state.refresh = null;
 }
 
+// ------------------------------------------------------------------ avis de l'IA
+const AI_TOPICS = { "/wifi": "wifi", "/radio": "radio", "/diagnostic": "diagnostic", "/zigbee": "zigbee", "/events": "overview" };
+state.ai = state.ai || {};
+const aiText = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/^#{1,4}\s*(.+)$/gm, "<strong>$1</strong>")
+  .replace(/^\s*[-*]\s+/gm, "• ").replace(/\n/g, "<br>");
+
+async function aiCard(root, topic) {
+  const st = await api("ai").catch(() => null);
+  if (!st || !root.isConnected) return;
+  document.getElementById("ai-card")?.remove();
+  const el = document.createElement("div");
+  el.id = "ai-card";
+  el.className = "card";
+  el.style.marginTop = "16px";
+  root.appendChild(el);
+  const prov = st.providers.find((p) => p.id === st.config.provider);
+  const done = state.ai[topic];
+  el.innerHTML = `<div class="card-h"><h2>Avis de l'IA</h2><span class="sub">${st.configured ? esc(prov.label) : "non configuré"}</span></div>
+    ${st.configured ? `
+      <p class="muted" style="font-size:12.5px;margin:0 0 8px">Envoie un résumé des mesures de cette page${st.config.anonymize ? " (adresses, noms d'appareils et de réseaux remplacés par des étiquettes)" : " <strong>sans anonymisation</strong>"} à ${esc(prov.label)}. Rien n'est envoyé sans clic.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <input id="ai-q" maxlength="500" placeholder="Question (facultatif) : par ex. pourquoi mon téléphone se déconnecte ?" style="flex:1;min-width:220px" value="${esc(done?.question || "")}">
+        <button class="btn primary" id="ai-go">Demander l'avis de l'IA</button>
+      </div>
+      <div id="ai-out">${done ? aiResult(done) : ""}</div>`
+    : `<p class="muted" style="margin:0">Choisissez un fournisseur et enregistrez votre clé dans <a href="#/settings">Réglages → Intelligence artificielle</a>.</p>`}`;
+  const go = el.querySelector("#ai-go");
+  if (!go) return;
+  go.addEventListener("click", async () => {
+    const q = el.querySelector("#ai-q").value;
+    go.disabled = true;
+    el.querySelector("#ai-out").innerHTML = '<span class="muted">Analyse en cours…</span>';
+    try {
+      const r = await api("ai/ask", { method: "POST", body: { topic, question: q } });
+      state.ai[topic] = { ...r, question: q };
+    } catch (e) {
+      state.ai[topic] = { error: e.message };
+    }
+    el.querySelector("#ai-out").innerHTML = aiResult(state.ai[topic]);
+    go.disabled = false;
+  });
+}
+
+function aiResult(r) {
+  if (r.error) return `<div class="banner">${esc(r.error)}</div>`;
+  return `<div style="font-size:13.5px;line-height:1.55">${aiText(r.answer)}</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">${esc(r.provider)} · ${esc(r.model)} · ${r.anonymized ? "anonymisé" : "non anonymisé"} · ${fmtDateTime(r.ts)}. Avis généré par une IA : à vérifier avant d'agir.</div>`;
+}
+
+async function aiSettings(root) {
+  const st = await api("ai");
+  const c = st.config;
+  const card = document.createElement("div");
+  card.className = "card";
+  card.style.marginBottom = "16px";
+  const opts = st.providers.map((p) => `<option value="${esc(p.id)}" ${p.id === c.provider ? "selected" : ""}>${esc(p.label)}</option>`).join("");
+  card.innerHTML = `<div class="card-h"><h2>Intelligence artificielle</h2><span class="sub">bouton « Avis de l'IA » des pages Wi-Fi, Radio, Diagnostic, Zigbee, Événements</span></div>
+    <p class="muted" style="font-size:12.5px;margin:0 0 10px">Choisissez un fournisseur et collez votre propre clé d'API : elle est chiffrée et ne ressort jamais de NetWatch. Seul un résumé des mesures part, uniquement quand vous cliquez sur le bouton.</p>
+    <div class="settings-grid">
+      <div class="set-row"><label for="ai-prov">Fournisseur</label><select id="ai-prov"><option value="">— aucun —</option>${opts}</select></div>
+      <div class="set-row"><label for="ai-model">Modèle <span class="set-help" id="ai-model-help"></span></label><input id="ai-model" value="${esc(c.model)}"></div>
+      <div class="set-row" id="ai-url-row"><label for="ai-url">Adresse de l'API <span class="set-help">https://… ou http:// vers une machine locale ; format « chat/completions »</span></label><input id="ai-url" value="${esc(c.base_url)}"></div>
+      <div class="set-row"><label for="ai-key">Clé d'API <span class="set-help" id="ai-key-help"></span></label><input id="ai-key" type="password" autocomplete="off" placeholder="${st.has_key ? "•••••••• (enregistrée)" : "Collez la clé ici"}"></div>
+    </div>
+    <label class="check" style="margin:8px 0"><span class="switch"><input type="checkbox" id="ai-anon" ${c.anonymize ? "checked" : ""}><span></span></span>Anonymiser avant l'envoi (MAC, IP, noms d'appareils et de réseaux)</label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn primary" id="ai-save">Enregistrer</button>
+      ${st.has_key ? '<button class="btn" id="ai-del">Supprimer la clé</button>' : ""}
+      <span id="ai-msg" class="muted" style="font-size:13px"></span></div>`;
+  const first = root.querySelector(".settings-grid")?.closest(".card");
+  root.insertBefore(card, first || null);
+  const sync = () => {
+    const p = st.providers.find((x) => x.id === card.querySelector("#ai-prov").value);
+    card.querySelector("#ai-url-row").style.display = p?.needs_url ? "" : "none";
+    card.querySelector("#ai-model").placeholder = p?.model || "nom du modèle";
+    card.querySelector("#ai-model-help").textContent = p?.model ? `par défaut : ${p.model}` : "";
+    card.querySelector("#ai-key-help").innerHTML = p?.keys ? `<a href="${esc(p.keys)}" target="_blank" rel="noopener">créer une clé</a>` : "";
+  };
+  card.querySelector("#ai-prov").addEventListener("change", sync);
+  sync();
+  const msg = (t) => { card.querySelector("#ai-msg").textContent = t; };
+  card.querySelector("#ai-save").addEventListener("click", async () => {
+    try {
+      await api("ai/config", { method: "PUT", body: {
+        provider: card.querySelector("#ai-prov").value, model: card.querySelector("#ai-model").value,
+        base_url: card.querySelector("#ai-url").value, anonymize: card.querySelector("#ai-anon").checked } });
+      const key = card.querySelector("#ai-key").value.trim();
+      if (key) await api("ai/key", { method: "PUT", body: { key } });
+      msg("Enregistré."); toast("IA configurée"); setTimeout(() => pageSettings(root), 600);
+    } catch (e) { msg("Échec : " + e.message); }
+  });
+  card.querySelector("#ai-del")?.addEventListener("click", async () => {
+    await api("ai/key", { method: "DELETE" }); pageSettings(root);
+  });
+}
+
 // ------------------------------------------------------------------ page : réglages
 async function pageSettings(root) {
   $("#page-title").textContent = "Réglages";
@@ -1041,6 +1137,7 @@ async function pageSettings(root) {
       <span id="set-msg" class="muted" style="font-size:13px"></span>
     </div>`;
 
+  await aiSettings(root);
   $("#set-reload").addEventListener("click", () => pageSettings(root));
   $("#set-wizard").addEventListener("click", async () => { await api("wizard/reset", { method: "POST" }); showWizard(); });
   $("#set-save").addEventListener("click", async () => {
@@ -1647,6 +1744,8 @@ async function route() {
     console.error(e);
     root.innerHTML = `<div class="card empty">Erreur de chargement : ${esc(e.message)}</div>`;
   }
+  state.aiTopic = AI_TOPICS[path] || null;
+  if (state.aiTopic) await aiCard(root, state.aiTopic).catch(console.warn);
   window.scrollTo(0, 0);
 }
 
@@ -1668,7 +1767,7 @@ function connectSSE() {
     clearTimeout(sse.timer);
     sse.timer = setTimeout(async () => {
       await loadOverview();
-      if (state.refresh && !document.activeElement?.matches("input, textarea, select")) state.refresh().catch(console.warn);
+      if (state.refresh && !document.activeElement?.matches("input, textarea, select")) state.refresh().then(() => state.aiTopic && aiCard($("#content"), state.aiTopic)).catch(console.warn);
     }, 800);
   };
 }
